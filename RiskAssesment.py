@@ -1,70 +1,89 @@
 import streamlit as st
+
 import sqlite3
-from streamlit import secrets
 
-# Create a connection to the SQLite database
-conn = sqlite3.connect('user_credentials.db')
-c = conn.cursor()
+def get_db_connection():
+    conn = sqlite3.connect('user_data.db')
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# Create a table for storing user credentials if it doesn't exist
-c.execute('''CREATE TABLE IF NOT EXISTS users
-             (username TEXT PRIMARY KEY, password TEXT)''')
-conn.commit()
 
-# Function to validate user credentials
-def validate_user(username, password):
-    c.execute("SELECT password FROM users WHERE username=?", (username,))
-    saved_password = c.fetchone()
-    if saved_password:
-        return secrets.compare_hashes(password, saved_password[0])
-    return False
+def create_user_table():
+    conn = get_db_connection()
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT NOT NULL
+        );
+    ''')
+    conn.commit()
+    conn.close()
 
 # Function to register a new user
 def register_user(username, password):
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, secrets.hash(password)))
+        conn = get_db_connection()
+        conn.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, password))
         conn.commit()
+        conn.close()
         return True
     except sqlite3.IntegrityError:
-        return False  # User already exists
+        return False 
 
-# Login form displayed in the sidebar
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+if 'show_signup' not in st.session_state:
+    st.session_state['show_signup'] = False
+if 'user_db' not in st.session_state:
+    st.session_state['user_db'] = {'admin': 'password'} 
+
+
+# Function to validate user credentials
+def validate_user(username, password):
+    conn = get_db_connection()
+    user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    conn.close()
+    return user is not None and user["password"] == password
+
+
+# Login form
 def login_form():
-    with st.sidebar:
-        st.title("Login")
-        username = st.text_input("Username", key="login")
-        password = st.text_input("Password", type="password", key="login_pass")
-        login_button = st.button("Login")
+    with st.sidebar.form("login_form"):
+        st.write("Login")
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        login_button = st.form_submit_button("Login")
+        
         if login_button:
             if validate_user(username, password):
                 st.session_state.logged_in = True
-                st.success("Logged in successfully.")
+                st.session_state.current_user = username
+                st.rerun()
             else:
-                st.error("Login failed. Incorrect username or password.")
-        if st.button("Sign up"):
-            st.session_state.show_signup = True  # Show sign-up form upon request.
+                st.error("Incorrect username or password.")
+                st.session_state.show_signup = True
 
 # Sign-up form
 def sign_up_form():
-    with st.sidebar:
-        st.title("Create an Account")
-        new_username = st.text_input("Choose a Username", key="new_user")
-        new_password = st.text_input("Choose a Password", type="password", key="new_pass")
-        confirm_password = st.text_input("Confirm Password", type="password", key="confirm_pass")
-        sign_up_button = st.button("Sign Up")
+    with st.sidebar.form("sign_up_form"):
+        st.write("Sign Up")
+        new_username = st.text_input("New Username", key="signup_username")
+        new_password = st.text_input("New Password", type="password", key="signup_password")
+        sign_up_button = st.form_submit_button("Sign Up")
+        
         if sign_up_button:
-            if new_password != confirm_password:
-                st.error("Passwords do not match.")
-            elif register_user(new_username, new_password):
-                st.success("Account created successfully. You can log in now.")
-                st.session_state.show_signup = False  # Hide sign-up form after successful registration.
+            if register_user(new_username, new_password):
+                st.success(f"User {new_username} created successfully.")
+                st.session_state.logged_in = True
+                st.session_state.current_user = new_username
+                st.rerun()
             else:
-                st.error("Username already exists. Please choose a different one.")
+                st.error("Username already exists.")
 
-# Risk assessment function incorporating the detailed questions provided
+# Risk assessment function
 def risk_assessment():
-    st.title("Risk Appetite Assessment")
-    st.write("Please answer the following questions to assess your risk appetite:")
+    st.title(f"Risk Appetite Assessment for {st.session_state.current_user}")
+
     # Define the questions and their associated weights
     questions = {
         "General Risk Appetite": ("Rate your willingness to take financial risks for high returns on a scale from 1 to 5, with 1 being low and 5 being high.", 2),
@@ -90,13 +109,65 @@ def risk_assessment():
         responses[question] = (answer, weight)
 
     if st.button('Calculate Risk Tolerance'):
-        # Placeholder for the calculation of the weighted score based on responses
-        st.success("Your risk profile has been calculated. (Implement calculation logic based on responses.)")
+        normalized_score = calculate_weighted_score(responses, questions)
+        SYMBOLS_STOCKS = ["MSFT", "Apple Inc.", "Nvidia Corp", "Amazon.com Inc", "Meta Platforms, Inc. Class A",
+        "Alphabet Inc. Class A" ]
+        SYMBOLS_CRYPTOS = ["Bitcoin", "Ethereum" ,"Solana",
+     "XRP", "USDC", "Cardano", "ADA", "Avalanche", "AVAX", "Dogecoin"] 
+
+        risk_tolerance = "Low" if normalized_score <= 40 else "Moderate" if normalized_score <= 70 else "High"
+        st.subheader(f"Your Risk Tolerance: {risk_tolerance}")
+        st.write(f"Normalized Score: {normalized_score:.2f}")
+        if risk_tolerance == "Low":
+            st.write("Based on your low risk tolerance, we suggest a conservative investment portfolio. Consider allocating a higher percentage to bonds (70-80%) about $7000 to  $8000, with the remainder split between stocks (15-25%) such as", ", ".join(SYMBOLS_STOCKS[0:2]), " and a very small portion in cryptocurrencies (0-5%) for diversification.")
+        elif risk_tolerance == "Moderate":
+            st.write("With a moderate risk tolerance, a balanced investment portfolio could be ideal. You might consider distributing your investments across bonds (40-50%) around $4500 to $5000, stocks such as ", ", ".join(SYMBOLS_STOCKS[0:4]), " (40-50%), and a small but slightly higher allocation to cryptocurrencies (5-10%) like ", ", ".join(SYMBOLS_CRYPTOS[0:2]), " to add potential for higher returns.")
+        elif risk_tolerance == "High":
+            st.write("Given your high risk tolerance, you may pursue a more aggressive investment strategy. This could involve a larger allocation to stocks  such as ", ", ".join(SYMBOLS_STOCKS[0:4]), "(60-70%), complemented by investments in cryptocurrencies (10-20%) in ", ", ".join(SYMBOLS_CRYPTOS[0:2]), "  for high growth potential, and a smaller portion in bonds (10-20%) or $2000 for some stability.")
+        
+
+# Define the function to calculate the weighted score
+def calculate_weighted_score(responses, questions):
+    total_score = 0
+    total_weight = sum(weight for _, weight in questions.values())
+    
+    for question, (answer, weight) in responses.items():
+        score = sentiment_analysis(answer) if isinstance(answer, str) else answer
+        total_score += score * weight
+    
+    return (total_score / (total_weight * 5)) * 100
+
+# Function for sentiment analysis (placeholder for actual analysis)
+def sentiment_analysis(text):
+    positive_keywords = ['positive', 'good', 'learned', 'valuable', 'beneficial']
+    negative_keywords = ['negative', 'bad', 'loss', 'lost', 'hurt', 'harmful']
+    
+    positive_score = sum(word in text.lower() for word in positive_keywords)
+    negative_score = sum(word in text.lower() for word in negative_keywords)
+    
+    return 4 if positive_score > negative_score else 2 if negative_score > positive_score else 3
+
+# Initialize session state variables
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'show_signup' not in st.session_state:
+    st.session_state.show_signup = False
+if 'current_user' not in st.session_state:
+    st.session_state.current_user = ''
 
 # Main app logic
-if 'logged_in' in st.session_state and st.session_state.logged_in:
-    risk_assessment()
-elif 'show_signup' in st.session_state and st.session_state.show_signup:
-    sign_up_form()
-else:
-    login_form()
+def main():
+    # Check if the user is logged in
+    if st.session_state.get('logged_in', False):
+        # User is logged in, show the risk assessment or other secured content
+        risk_assessment()
+    elif st.session_state.get('show_signup', False):
+        # Show the sign-up form if the user chooses to sign up
+        sign_up_form()
+    else:
+        # Default to showing the login form
+        login_form()
+
+# Ensure the main logic is called to execute the app
+main()
+create_user_table()  # Ensure the users table exists
